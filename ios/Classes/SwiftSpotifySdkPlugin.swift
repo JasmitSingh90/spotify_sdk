@@ -354,14 +354,6 @@ public class SwiftSpotifySdkPlugin: NSObject, FlutterPlugin {
     }
 
     private func startAudioSessionMonitoring() {
-        // Add observer for audio session category changes
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(audioSessionDidChangeCategory),
-            name: AVAudioSession.categoryChangedNotification,
-            object: AVAudioSession.sharedInstance()
-        )
-
         // Add observer for audio session interruptions
         NotificationCenter.default.addObserver(
             self,
@@ -370,14 +362,22 @@ public class SwiftSpotifySdkPlugin: NSObject, FlutterPlugin {
             object: AVAudioSession.sharedInstance()
         )
 
+        // Add observer for route changes (headphones, bluetooth, etc.)
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(audioSessionRouteChanged),
+            name: AVAudioSession.routeChangeNotification,
+            object: AVAudioSession.sharedInstance()
+        )
+
         // Start a timer to periodically check and enforce audio session category
-        audioSessionTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        audioSessionTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             self?.enforceAudioSessionCategory()
         }
     }
 
-    @objc private func audioSessionDidChangeCategory(_ notification: Notification) {
-        print("SpotifySDK: Audio session category changed, enforcing playAndRecord")
+    @objc private func audioSessionRouteChanged(_ notification: Notification) {
+        print("SpotifySDK: Audio session route changed, enforcing playAndRecord")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
             self.configureAudioSession()
         }
