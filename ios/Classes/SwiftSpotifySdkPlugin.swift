@@ -10,6 +10,7 @@ public class SwiftSpotifySdkPlugin: NSObject, FlutterPlugin {
     private var playerContextHandler: PlayerContextHandler?
     private static var playerStateChannel: FlutterEventChannel?
     private static var playerContextChannel: FlutterEventChannel?
+    private var audioSessionTimer: Timer?
 
     public static func register(with registrar: FlutterPluginRegistrar) {
         guard playerStateChannel == nil else {
@@ -27,6 +28,8 @@ public class SwiftSpotifySdkPlugin: NSObject, FlutterPlugin {
 
         // Configure AVAudioSession for simultaneous playback and recording
         instance.configureAudioSession()
+        // Start monitoring and enforcing audio session category
+        instance.startAudioSessionMonitoring()
     }
 
     public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
@@ -155,6 +158,7 @@ public class SwiftSpotifySdkPlugin: NSObject, FlutterPlugin {
                     return
             }
             let asRadio: Bool = (swiftArguments[SpotifySdkConstants.paramAsRadio] as? Bool) ?? false
+            configureAudioSession() // Ensure audio session is set before playing
             appRemote.playerAPI?.play(uri, asRadio: asRadio, callback: defaultPlayAPICallback)
         case SpotifySdkConstants.methodPause:
             guard let appRemote = appRemote else {
@@ -167,6 +171,7 @@ public class SwiftSpotifySdkPlugin: NSObject, FlutterPlugin {
                 result(FlutterError(code: "Connection Error", message: "AppRemote is null", details: nil))
                 return
             }
+            configureAudioSession() // Ensure audio session is set before resuming
             appRemote.playerAPI?.resume(defaultPlayAPICallback)
         case SpotifySdkConstants.methodSkipNext:
             guard let appRemote = appRemote else {
@@ -342,9 +347,68 @@ public class SwiftSpotifySdkPlugin: NSObject, FlutterPlugin {
             let audioSession = AVAudioSession.sharedInstance()
             try audioSession.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth, .allowBluetoothA2DP, .allowAirPlay])
             try audioSession.setActive(true)
+            print("SpotifySDK: Audio session configured for playAndRecord")
         } catch {
-            print("Failed to configure AVAudioSession: \(error)")
+            print("SpotifySDK: Failed to configure AVAudioSession: \(error)")
         }
+    }
+
+    private func startAudioSessionMonitoring() {
+        // Add observer for audio session category changes
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(audioSessionDidChangeCategory),
+            name: AVAudioSession.categoryChangedNotification,
+            object: AVAudioSession.sharedInstance()
+        )
+
+        // Add observer for audio session interruptions
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(audioSessionWasInterrupted),
+            name: AVAudioSession.interruptionNotification,
+            object: AVAudioSession.sharedInstance()
+        )
+
+        // Start a timer to periodically check and enforce audio session category
+        audioSessionTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.enforceAudioSessionCategory()
+        }
+    }
+
+    @objc private func audioSessionDidChangeCategory(_ notification: Notification) {
+        print("SpotifySDK: Audio session category changed, enforcing playAndRecord")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            self.configureAudioSession()
+        }
+    }
+
+    @objc private func audioSessionWasInterrupted(_ notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: typeValue) else {
+            return
+        }
+
+        if type == .ended {
+            print("SpotifySDK: Audio session interruption ended, restoring playAndRecord")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                self.configureAudioSession()
+            }
+        }
+    }
+
+    private func enforceAudioSessionCategory() {
+        let audioSession = AVAudioSession.sharedInstance()
+        if audioSession.category != .playAndRecord {
+            print("SpotifySDK: Detected category change from \(audioSession.category.rawValue) to playAndRecord, enforcing...")
+            configureAudioSession()
+        }
+    }
+
+    deinit {
+        audioSessionTimer?.invalidate()
+        NotificationCenter.default.removeObserver(self)
     }
 
     private func connectToSpotify(clientId: String, redirectURL: String, accessToken: String? = nil, spotifyUri: String = "", asRadio: Bool?, additionalScopes: String? = nil) throws {
