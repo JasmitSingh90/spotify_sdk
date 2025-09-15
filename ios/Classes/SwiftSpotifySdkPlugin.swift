@@ -11,6 +11,8 @@ public class SwiftSpotifySdkPlugin: NSObject, FlutterPlugin {
     private static var playerStateChannel: FlutterEventChannel?
     private static var playerContextChannel: FlutterEventChannel?
     private var audioSessionTimer: Timer?
+    private var isConfiguringAudioSession = false
+    private var lastAudioSessionCategory: AVAudioSession.Category?
 
     public static func register(with registrar: FlutterPluginRegistrar) {
         guard playerStateChannel == nil else {
@@ -28,8 +30,6 @@ public class SwiftSpotifySdkPlugin: NSObject, FlutterPlugin {
 
         // Configure AVAudioSession for simultaneous playback and recording
         instance.configureAudioSession()
-        // Start monitoring and enforcing audio session category
-        instance.startAudioSessionMonitoring()
     }
 
     public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
@@ -144,6 +144,7 @@ public class SwiftSpotifySdkPlugin: NSObject, FlutterPlugin {
                 result(State.playerStateDictionary(playerState).json)
             })
         case SpotifySdkConstants.methodDisconnectFromSpotify:
+            stopAudioSessionMonitoring()
             appRemote?.disconnect()
 //            appRemote?.connectionParameters.accessToken = nil
             result(true)
@@ -343,17 +344,32 @@ public class SwiftSpotifySdkPlugin: NSObject, FlutterPlugin {
     }
 
     private func configureAudioSession() {
+        // Prevent recursive calls and unnecessary reconfigurations
+        guard !isConfiguringAudioSession else { return }
+
+        let audioSession = AVAudioSession.sharedInstance()
+
+        // Only reconfigure if category has actually changed
+        if audioSession.category == .playAndRecord && lastAudioSessionCategory == .playAndRecord {
+            return
+        }
+
+        isConfiguringAudioSession = true
+
         do {
-            let audioSession = AVAudioSession.sharedInstance()
             try audioSession.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth, .allowBluetoothA2DP, .allowAirPlay])
             try audioSession.setActive(true)
+            lastAudioSessionCategory = .playAndRecord
             print("SpotifySDK: Audio session configured for playAndRecord")
         } catch {
             print("SpotifySDK: Failed to configure AVAudioSession: \(error)")
         }
+
+        isConfiguringAudioSession = false
     }
 
     private func startAudioSessionMonitoring() {
+        // Only start monitoring when Spotify is actually connected and might interfere
         // Add observer for audio session interruptions
         NotificationCenter.default.addObserver(
             self,
@@ -362,25 +378,16 @@ public class SwiftSpotifySdkPlugin: NSObject, FlutterPlugin {
             object: AVAudioSession.sharedInstance()
         )
 
-        // Add observer for route changes (headphones, bluetooth, etc.)
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(audioSessionRouteChanged),
-            name: AVAudioSession.routeChangeNotification,
-            object: AVAudioSession.sharedInstance()
-        )
-
-        // Start a timer to periodically check and enforce audio session category
-        audioSessionTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+        // Start a much less frequent timer to check audio session category only when needed
+        audioSessionTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
             self?.enforceAudioSessionCategory()
         }
     }
 
-    @objc private func audioSessionRouteChanged(_ notification: Notification) {
-        print("SpotifySDK: Audio session route changed, enforcing playAndRecord")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            self.configureAudioSession()
-        }
+    private func stopAudioSessionMonitoring() {
+        audioSessionTimer?.invalidate()
+        audioSessionTimer = nil
+        NotificationCenter.default.removeObserver(self, name: AVAudioSession.interruptionNotification, object: nil)
     }
 
     @objc private func audioSessionWasInterrupted(_ notification: Notification) {
@@ -407,8 +414,7 @@ public class SwiftSpotifySdkPlugin: NSObject, FlutterPlugin {
     }
 
     deinit {
-        audioSessionTimer?.invalidate()
-        NotificationCenter.default.removeObserver(self)
+        stopAudioSessionMonitoring()
     }
 
     private func connectToSpotify(clientId: String, redirectURL: String, accessToken: String? = nil, spotifyUri: String = "", asRadio: Bool?, additionalScopes: String? = nil) throws {
@@ -439,7 +445,8 @@ public class SwiftSpotifySdkPlugin: NSObject, FlutterPlugin {
 
         if accessToken != nil {
             appRemote?.connect()
-            // Ensure audio session is configured for simultaneous playback and recording
+            // Start monitoring only after connection
+            startAudioSessionMonitoring()
             configureAudioSession()
         } else {
           // Note: A blank string will play the user's last song or pick a random one.
@@ -447,7 +454,8 @@ public class SwiftSpotifySdkPlugin: NSObject, FlutterPlugin {
             if (!success) {
               self.connectionStatusHandler?.connectionResult?(FlutterError(code: "spotifyNotInstalled", message: "Spotify app is not installed", details: nil))
             } else {
-              // Ensure audio session is configured for simultaneous playback and recording
+              // Start monitoring only after successful authorization
+              self.startAudioSessionMonitoring()
               self.configureAudioSession()
             }
           }
