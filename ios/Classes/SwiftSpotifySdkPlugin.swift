@@ -1,5 +1,6 @@
 import Flutter
 import SpotifyiOS
+import AVFoundation
 
 public class SwiftSpotifySdkPlugin: NSObject, FlutterPlugin {
     private static var instance = SwiftSpotifySdkPlugin()
@@ -23,6 +24,9 @@ public class SwiftSpotifySdkPlugin: NSObject, FlutterPlugin {
         registrar.addMethodCallDelegate(instance, channel: spotifySDKChannel)
         instance.connectionStatusHandler = ConnectionStatusHandler()
         connectionStatusChannel.setStreamHandler(instance.connectionStatusHandler)
+
+        // Configure AVAudioSession for simultaneous playback and recording
+        instance.configureAudioSession()
     }
 
     public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
@@ -333,6 +337,16 @@ public class SwiftSpotifySdkPlugin: NSObject, FlutterPlugin {
         }
     }
 
+    private func configureAudioSession() {
+        do {
+            let audioSession = AVAudioSession.sharedInstance()
+            try audioSession.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth, .allowBluetoothA2DP, .allowAirPlay])
+            try audioSession.setActive(true)
+        } catch {
+            print("Failed to configure AVAudioSession: \(error)")
+        }
+    }
+
     private func connectToSpotify(clientId: String, redirectURL: String, accessToken: String? = nil, spotifyUri: String = "", asRadio: Bool?, additionalScopes: String? = nil) throws {
         func configureAppRemote(clientID: String, redirectURL: String, accessToken: String? = nil) throws {
             guard let redirectURL = URL(string: redirectURL) else {
@@ -361,11 +375,16 @@ public class SwiftSpotifySdkPlugin: NSObject, FlutterPlugin {
 
         if accessToken != nil {
             appRemote?.connect()
+            // Ensure audio session is configured for simultaneous playback and recording
+            configureAudioSession()
         } else {
           // Note: A blank string will play the user's last song or pick a random one.
           self.appRemote?.authorizeAndPlayURI(spotifyUri, asRadio: asRadio ?? false, additionalScopes: scopes) { success in
             if (!success) {
               self.connectionStatusHandler?.connectionResult?(FlutterError(code: "spotifyNotInstalled", message: "Spotify app is not installed", details: nil))
+            } else {
+              // Ensure audio session is configured for simultaneous playback and recording
+              self.configureAudioSession()
             }
           }
         }
